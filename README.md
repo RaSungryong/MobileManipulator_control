@@ -1,5 +1,71 @@
-더 자세하고 전문적인 GitHub README.md 구성을 제안해 드립니다. 이 문서는 시스템의 아키텍처, 데이터 흐름, 핵심 알고리즘 및 상세 API를 포함하여 개발자와 사용자 모두에게 유용하도록 설계되었습니다.🤖 Mobile Manipulator Autonomous Scanning System본 프로젝트는 AprilTag 기반 토폴로지 내비게이션과 MoveIt! 매니퓰레이션을 통합한 모바일 매니퓰레이터 시스템입니다. 로봇은 환경 내 배치된 AprilTag를 이정표로 삼아 자율 주행하며, 각 작업 포인트에서 정밀한 스캔 알고리즘을 수행합니다.🏗️ 시스템 아키텍처 및 데이터 흐름이 시스템은 네 가지 계층으로 분리되어 있어 높은 유지보수성과 확장성을 제공합니다.1. Task Management Layer (task_manager.py)전체 작업의 논리적 순서를 정의합니다.작업 정의: 구역 B(111→100), C(112→123), D(135→124), E(136→147)와 같이 태그 ID 시퀀스를 기반으로 작업 경로를 생성합니다.태그 필터링: 입력된 태그 ID가 유효한 작업 대상(WORK 태그)인지 여부를 검증합니다.2. Coordination Layer (task_executor.py)시스템의 상태를 관리하고 모바일 베이스와 기계팔 사이의 동기화를 제어하는 유한 상태 머신(FSM)입니다.상태 전이: IDLE ➔ MOVING ➔ ARRIVED ➔ SCANNING ➔ SCAN_DONE ➔ IDLE 과정을 반복합니다.명령 인터페이스: 사용자는 /task_command 토픽을 통해 실시간으로 작업을 할당하거나 중단할 수 있습니다.3. Mobile Navigation Layer (mobile_robot_controller.py)지도가 없는 환경에서 AprilTag를 사용하여 정밀 주행을 수행합니다.Topology Graph: AprilTag를 노드로, 이동 방향을 에지로 하는 그래프를 구성하여 BFS(Breadth-First Search) 알고리즘으로 경로를 탐색합니다.Visual Servoing: 카메라 피드백을 통해 태그의 중심과 로봇을 정렬하며, 태그 모서리 좌표를 이용해 미세한 각도 오차를 보정합니다.4. Manipulation Layer (arm_controller.py)MoveIt!을 사용하여 기계팔의 안정적인 궤적을 계획하고 실행합니다.Coordinate Transform: 월드 좌표계의 목표 지점을 로봇의 현재 오도메트리 정보를 바탕으로 기계팔 좌표계로 정밀하게 변환합니다.CSV-Driven Logic: grid_path.csv에 정의된 그룹별 스캔 포인트를 로드하여 순차적으로 실행합니다.⚙️ 핵심 알고리즘 상세좌표 변환 (Coordinate Transformation)ArmController는 로봇의 현재 위치 $$(base_x, base_y, \theta)$$를 사용하여 스캔 포인트 $$(g_x, g_y, g_z)$$를 기계팔의 제어 좌표로 변환합니다.$$T = T_{mb} \times T_{ba}$$여기서 $$T_{mb}$$는 모바일 베이스와 월드 사이의 변환 행렬이며, $$T_{ba}$$는 기계팔과 모바일 베이스 사이의 고정 변환 행렬입니다.주행 알고리즘경로 탐색: 목표 태그까지의 최단 경로(태그 리스트)를 검색합니다.정렬: 현재 태그에서 목표 태그로 이동하기 전, 시각적 피드백을 통해 로봇을 정렬합니다.이동: move_to_visible_tag 함수를 통해 목표 태그가 일정 크기로 인식될 때까지 주행합니다.🕹️ 제어 인터페이스 (Topic API)구독 토픽 (Subscribed Topics)토픽명메시지 타입설명/task_commandstd_msgs/String시스템 제어 명령 (TASK TASK1, STOP, PAUSE, RESUME, SKIP)/scan_finishedstd_msgs/Bool기계팔의 스캔 작업 완료 신호/rgb, /camera_infosensor_msgs/Image 등AprilTag 감지를 위한 카메라 데이터발행 토픽 (Published Topics)토픽명메시지 타입설명/cmd_velgeometry_msgs/Twist모바일 베이스 속도 제어 명령/robot_poserobot_msgs/Pose2DWithFlag기계팔 동작을 위한 현재 로봇 위치 및 태그 ID🛠️ 개발 및 실행 가이드의존성 설치Bashpip install dt-apriltags scipy numpy
+# 🤖 Mobile Manipulator Autonomous Scanning System
+
+본 프로젝트는 **AprilTag 기반 토폴로지 내비게이션**과 **MoveIt! 매니퓰레이션**을 결합하여 지도가 없는 환경에서도 자율 주행 및 정밀 스캔 작업을 수행하는 모바일 매니퓰레이터 시스템입니다.
+
+---
+
+## 🏗️ 시스템 아키텍처
+
+이 시스템은 계층화된 4개의 모듈로 구성되어 있어 각 기능의 독립성과 확장성을 보장합니다.
+
+| 레이어 | 모듈명 | 파일명 | 주요 역할 |
+| :--- | :--- | :--- | :--- |
+| **작업 관리** | Task Manager | `task_manager.py` | 스캔 대상 태그 및 작업 시퀀스 정의 |
+| **시스템 통합** | Task Executor | `task_executor.py` | FSM 기반 주행-스캔 프로세스 동기화 및 명령 처리 |
+| **주행 제어** | Mobile Controller | `mobile_robot_controller.py` | 토폴로지 맵 기반 경로 계획 및 시각적 정렬 주행 |
+| **암 제어** | Arm Controller | `arm_controller.py` | 실시간 좌표 변환 기반 매니퓰레이터 궤적 실행 |
+
+
+
+---
+
+## 🚀 주요 모듈 상세 설명
+
+### 1. Task Management (`task_manager.py`)
+로봇이 수행해야 할 구역별 스캔 순서를 관리합니다.
+* **Zone 정의**: Zone B, C, D, E 등 논리적 구역별로 WORK 태그 ID 시퀀스를 정의합니다.
+* **최적화**: 주행 동선을 고려하여 태그 스캔 순서(예: 상단에서 하단으로)를 리스트 형태로 제공합니다.
+
+### 2. Mobile Navigation (`mobile_robot_controller.py`)
+AprilTag를 이정표로 사용하여 정밀한 위치 추정 및 주행을 수행합니다.
+* **Topology Graph**: AprilTag 간의 연결 관계를 정의한 `NavigationGraph`를 구축하고 BFS(Breadth-First Search) 알고리즘으로 최단 경로를 탐색합니다.
+* **Visual Servoing**: 
+    * `align_to_tag`: 태그의 모서리 데이터를 분석하여 로봇을 정면으로 정렬합니다.
+    * `move_to_visible_tag`: 카메라 피드백을 통해 목표 태그까지의 거리를 제어하며 정밀하게 접근합니다.
+
+### 3. Manipulation Control (`arm_controller.py`)
+로봇 베이스의 위치 변화를 실시간으로 보정하여 목표 지점을 정밀 타격합니다.
+* **Coordinate Transformation**: 세계 좌표계의 목표 포인트를 로봇 오도메트리와 결합하여 기계팔 좌표계로 변환합니다.
+  $$T = T_{mb} \times T_{ba}$$
+  *(여기서 $T_{mb}$는 베이스 좌표계 변환, $T_{ba}$는 베이스-암 사이의 변환입니다.)*
+* **Concurrency Safety**: `busy` 플래그를 통해 기계팔이 동작 중일 때 새로운 명령이 중첩되지 않도록 보호합니다.
+
+### 4. Task Execution (`task_executor.py`)
+시스템의 전체 상태 변화를 관리하는 중앙 제어 장치입니다.
+* **State Machine**: `IDLE` ➔ `MOVING` ➔ `ARRIVED` ➔ `SCANNING` ➔ `SCAN_DONE` 순으로 상태를 전이하며 전체 루프를 제어합니다.
+* **Command Dispatcher**: `/task_command` 토픽을 통해 외부 사용자의 명령을 해석하고 즉각적인 조치(멈춤, 일시정지, 건너뛰기 등)를 취합니다.
+
+---
+
+## 🕹️ 제어 인터페이스 (API)
+
+### 사용자 명령 (Topic: `/task_command`)
+| 명령 | 설명 |
+| :--- | :--- |
+| `TASK TASK1` | Zone B, C 구역 스캔 작업 시작 |
+| `TASK TASK2` | Zone D, E 구역 스캔 작업 시작 |
+| `STOP` | 현재 수행 중인 모든 작업을 즉각 중단 |
+| `PAUSE / RESUME` | 주행 및 스캔 프로세스 일시 정지 및 재개 |
+| `SKIP` | 현재 태그를 건너뛰고 다음 목표로 이동 |
+
+### 데이터 흐름도
+
+
+---
+
+## 🛠️ 설치 및 실행 방법
+
+### 1. 의존성 설치
+```bash
+pip install dt-apriltags scipy numpy
 sudo apt-get install ros-<distro>-moveit-commander
-실행 프로세스시스템 초기화: 로봇은 충전 스테이션(Tag 508) 근처에서 시작해야 합니다.노드 구동:Bashrosrun mold_pkg task_executor.py
-작업 할당:Bashrostopic pub /task_command std_msgs/String "data: 'TASK TASK1'"
-작업 관리 예시 (CSV 데이터)grid_path.csv 파일은 다음과 같은 구조를 가집니다:group_id: 작업 대상 태그 IDpoint_id: 해당 태그에서의 스캔 순서x, y, z, rx, ry, rz: 목표 좌표 및 자세주의사항: ArmController는 스캔 작업 중 새로운 요청을 무시하는 busy 플래그 메커니즘을 포함하고 있으므로, 이전 스캔이 완료된 후 다음 명령을 내려야 합니다.이 가이드와 함께 다음 단계로 어떤 작업을 도와드릴까요?특정 모듈의 소스 코드를 최적화하고 싶으신가요?새로운 TASK3 구역을 정의하고 싶으신가요?하드웨어 연결 설정 가이드를 작성하고 싶으신가요?
