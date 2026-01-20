@@ -1,107 +1,59 @@
-Mobile Manipulator Scanning System
-이 프로젝트는 AprilTag를 기반으로 한 모바일 로봇의 자율 주행과 MoveIt을 이용한 기계팔의 정밀 스캔 동작을 결합한 통합 제어 시스템입니다.
+# 🤖 Mobile Manipulator Autonomous Scanning System
 
-🏗 시스템 아키텍처
-📦 모듈별 상세 설명
-1. TaskManager (task_manager.py)
-로봇이 수행할 스캔 작업의 순서와 대상 태그(WORK Tag)를 관리하는 논리 계층입니다.
+이 프로젝트는 **AprilTag** 기반의 토폴로지 네비게이션과 **MoveIt**을 이용한 매니퓰레이터 제어를 결합한 통합 자동화 시스템입니다. 로봇은 환경 내의 태그를 이정표로 삼아 자율 주행하며, 각 작업 포인트에서 정밀한 스캔 알고리즘을 수행합니다.
 
-주요 기능:
 
-스캔 구역별(Zone B, C, D, E) 태그 리스트 생성 및 순서 정의.
 
-특정 태그 ID가 스캔 대상인지 판별하는 유효성 검사.
+---
 
-핵심 함수:
+## 🏗️ 시스템 아키텍처
 
-_task_zone_b_c() / _task_zone_d_e(): 구역별 WORK 태그 시퀀스를 생성합니다.
+본 시스템은 높은 응집도와 낮은 결합도를 위해 4개의 핵심 모듈로 설계되었습니다:
 
-외부 호출 API:
+| 모듈명 | 역할 | 주요 기술 |
+| :--- | :--- | :--- |
+| **Task Manager** | 작업 시퀀스 정의 | 태그 데이터베이스 관리 |
+| **Mobile Controller** | 주행 및 정밀 정렬 | BFS 경로 탐색, 시각적 서보 제어 |
+| **Arm Controller** | 매니퓰레이터 제어 | MoveIt!, 좌표 변환 알고리즘 |
+| **Task Executor** | 시스템 통합 관리 | 유한 상태 머신 (FSM) |
 
-get_task(task_name): 작업 이름(예: "TASK1")에 해당하는 태그 리스트를 반환합니다.
+---
 
-list_tasks(): 정의된 모든 작업 목록을 반환합니다.
+## 📦 모듈별 상세 설명
 
-is_scan_tag(tag_id): 입력된 ID가 작업용 태그(100~147)인지 확인합니다.
+### 1. Task Manager (`task_manager.py`)
+로봇이 수행해야 할 "할 일 목록"을 정의합니다.
+* **작업 정의**: 구역별(Zone B~E) WORK 태그의 스캔 순서를 리스트 형태로 생성합니다.
+* **API**: 
+    * `get_task(task_name)`: 특정 작업의 태그 시퀀스를 반환합니다.
+    * `is_scan_tag(tag_id)`: 특정 태그가 스캔 작업용인지 검증합니다.
 
-2. MobileRobotController (mobile_robot_controller.py)
-AprilTag를 활용한 토폴로지 맵 기반의 주행 및 시각적 정렬을 담당합니다.
+### 2. Mobile Robot Controller (`mobile_robot_controller.py`)
+AprilTag를 활용하여 지도 없이 주행하고 정밀하게 위치를 잡습니다.
+* **토폴로지 내비게이션**: `NavigationGraph`와 BFS 알고리즘을 통해 태그 간 최단 경로를 탐색합니다.
+* **시각적 정렬**: 태그의 모서리 데이터를 기반으로 로봇을 정면으로 정렬하는 `align_to_tag` 기능을 수행합니다.
+* **API**: 
+    * `move_to_tag(target_tag)`: 목표 지점까지의 주행 프로세스를 실행합니다.
 
-주요 기능:
+### 3. Arm Controller (`arm_controller.py`)
+로봇의 현재 위치를 실시간으로 반영하여 스캔 동작을 수행합니다.
+* **좌표 변환**: 세계 좌표계의 포인트를 기계팔 기저 좌표계로 변환하기 위해 다음과 같은 행렬 연산을 수행합니다.
+  $$T = T_{mb} \times T_{ba}$$
+* **안전 메커니즘**: 모든 작업 완료 또는 오류 발생 시 반드시 `move_to_home`으로 복귀합니다.
+* **API**: 
+    * `is_busy()`: 현재 매니퓰레이터의 동작 상태를 반환합니다.
 
-NavigationGraph를 이용한 태그 간 최단 경로 검색.
+### 4. Task Executor (`task_executor.py`)
+전체 시스템의 흐름을 제어하는 "브레인"입니다.
+* **상태 머신**: `IDLE`, `MOVING`, `SCANNING` 등의 상태를 관리하며 동기화를 제어합니다.
 
-AprilTag 에지(Edge)를 활용한 정밀 방향 정렬(Visual Servoing).
 
-주행 중 일시정지(Pause) 및 재개(Resume) 제어.
 
-핵심 함수:
+---
 
-align_to_tag(tag_id): 카메라 데이터를 분석하여 태그와 로봇을 수평으로 정렬합니다.
+## 🚀 사용 방법
 
-move_to_visible_tag(target_tag, backward): 대상 태그가 보일 때까지 시각 피드백 주행을 수행합니다.
-
-외부 호출 API:
-
-move_to_tag(target_tag): 경로 계획부터 도달까지의 전 과정을 실행합니다.
-
-set_pause(bool): 주행 루프를 즉시 멈추거나 다시 시작합니다.
-
-publish_pose_for_arm(tag_id): 기계팔 동작에 필요한 현재 좌표 정보를 /robot_pose 토픽으로 발행합니다.
-
-3. ArmController (arm_controller.py)
-로봇의 현재 위치를 기반으로 기계팔의 스캔 궤적을 계산하고 실행합니다.
-
-주요 기능:
-
-세계 좌표계 데이터를 기계팔 기저 좌표계로 변환하는 Homogeneous Transform 수행.
-
-CSV 파일(grid_path.csv)로부터 포인트별 스캔 목표 및 속도 데이터 로드.
-
-작업 완료 후 반드시 Home Pose로 복귀하는 안전 메커니즘.
-
-핵심 함수:
-
-process_transforms(goals, msg): 로봇의 현재 x, y, theta를 기반으로 좌표 변환을 수행합니다.
-
-execute_goals(): MoveIt을 호출하여 계산된 목표 지점들을 순차적으로 방문합니다.
-
-외부 호출 API:
-
-move_to_home(): 기계팔을 미리 정의된 안전 위치로 이동시킵니다.
-
-is_busy(): 현재 기계팔이 동작 중인지 상태를 확인합니다.
-
-Topic Subscription: /robot_pose 수신 시 자동으로 execute_scan이 시작됩니다.
-
-4. TaskExecutor (task_executor.py)
-시스템 전체의 상태 머신(FSM) 역할을 하며, 모바일 플랫폼과 기계팔 사이의 동기화를 제어합니다.
-
-주요 기능:
-
-IDLE → MOVING → SCANNING → SCAN_DONE으로 이어지는 상태 관리.
-
-사용자 명령에 따른 작업 중단(STOP), 건너뛰기(SKIP), 작업 전환 처리.
-
-핵심 함수:
-
-_run_task(scan_tags): 작업 리스트의 모든 태그에 대해 주행과 스캔을 루프로 실행합니다.
-
-_wait_for_scan(tag_id): 기계팔이 스캔을 마칠 때까지 실행 흐름을 대기시킵니다.
-
-외부 제어 인터페이스 (Topic: /task_command):
-
-TASK TASK1: TASK1 시퀀스 시작
-
-STOP: 전체 시스템 즉시 정지
-
-PAUSE / RESUME: 일시 정지 및 재개
-
-SKIP: 현재 태그 스캔을 건너뛰고 다음 태그로 이동
-
-💡 권장 설치 및 실행 방법
-의존성 설치: dt-apriltags, moveit_commander, scipy 등이 필요합니다.
-
-데이터 준비: /scripts/grid_path.csv 경로에 스캔 데이터가 있어야 합니다.
-
-실행: rosrun mold_pkg task_executor.py 명령어를 통해 메인 루프를 구동합니다.
+### 1. 시스템 실행
+메인 실행 노드를 구동합니다.
+```bash
+rosrun your_package_name task_executor.py
