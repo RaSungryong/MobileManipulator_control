@@ -146,28 +146,25 @@ class MobileManipulatorTaskExecutor:
     # --------------------------------------------------
     # TASK EXECUTION
     # --------------------------------------------------
-    def _run_task(self, scan_tags: List[int]):
+    def _run_task(self, task_items: List[dict]):
 
         self._reset_flags()
-        rospy.loginfo(f"[TASK] Start task: {scan_tags}")
+        rospy.loginfo(f"[TASK] Start task: {task_items}")
 
-        for tag_id in scan_tags:
+        for item in task_items:
+
+            tag_id = item["tag"]
+            do_scan = item.get("scan", False)
 
             # ---------- STOP ----------
             if self._stop_requested:
                 rospy.logwarn("[TASK] Task stopped")
                 break
 
-            # ---------- PAUSE (BLOCKING) ----------
+            # ---------- PAUSE ----------
             while self._pause_requested and not rospy.is_shutdown():
                 rospy.loginfo_throttle(1.0, "[TASK] Paused")
                 rospy.sleep(0.1)
-
-            # ---------- SKIP ----------
-            if self._skip_requested:
-                rospy.logwarn(f"[TASK] Skip tag {tag_id}")
-                self._skip_requested = False
-                continue
 
             # ---------- MOVE ----------
             self.state = MobileManipulatorState.MOVING
@@ -177,7 +174,12 @@ class MobileManipulatorTaskExecutor:
 
             self.state = MobileManipulatorState.ARRIVED
 
-            # ---------- SCAN ----------
+            # ---------- SCAN (선택적) ----------
+            if not do_scan:
+                rospy.loginfo(f"[TASK] Tag {tag_id} → MOVE ONLY")
+                continue
+
+            rospy.loginfo(f"[TASK] Tag {tag_id} → MOVE + SCAN")
             self.state = MobileManipulatorState.SCANNING
             self.mobile.publish_pose_for_arm(tag_id)
 
@@ -189,6 +191,8 @@ class MobileManipulatorTaskExecutor:
 
         self.state = MobileManipulatorState.IDLE
         rospy.loginfo("[TASK] Task finished")
+
+
 
     # --------------------------------------------------
     # UTILS
