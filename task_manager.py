@@ -9,10 +9,10 @@ class TaskManager:
     Final TaskManager (single responsibility, stable design)
 
     Design rules:
-    - Only defines WORK (scan) tags
+    - Defines WHAT to visit (tag) and HOW to use it (scan or move-only)
     - Does NOT include Dock / Pivot / Move tags
     - Does NOT expand navigation paths
-    - Order of tags == scan execution order
+    - Execution order is explicitly defined
     """
 
     # --------------------------------------------------
@@ -21,81 +21,69 @@ class TaskManager:
     def __init__(self):
         """
         Initialize all predefined tasks.
-
-        Task naming convention:
-        - TASK1, TASK2, ...
         """
-        self._tasks: Dict[str, List[int]] = {
+        self._tasks: Dict[str, List[Dict]] = {
             "TASK1": self._task_zone_b_c(),
             "TASK2": self._task_zone_d_e(),
+            "TASK_SINGLE": self._task_single_example(),
         }
 
     # --------------------------------------------------
     # Public API
     # --------------------------------------------------
-    def get_task(self, task_name: str) -> List[int]:
+    def get_task(self, task_name: str) -> List[Dict]:
         """
-        Return the scan tag list for a given task name.
+        Return task execution list.
+
+        Each item format:
+            {
+                "tag": int,
+                "scan": bool
+            }
 
         Args:
-            task_name (str): Task identifier, e.g. "TASK1", "TASK2"
+            task_name (str): Task identifier
 
         Returns:
-            List[int]: Ordered list of WORK tag IDs to be scanned.
-                       Returns empty list if task does not exist.
+            List[Dict]: Ordered task items
         """
         task_name = task_name.upper()
         return self._tasks.get(task_name, [])
 
     def list_tasks(self) -> List[str]:
-        """
-        List all available task names.
-
-        Returns:
-            List[str]: Task name list
-        """
+        """List all available task names"""
         return list(self._tasks.keys())
-
-    def is_scan_tag(self, tag_id: int) -> bool:
-        """
-        Check whether a tag ID is a WORK (scan) tag.
-
-        Args:
-            tag_id (int): AprilTag ID
-
-        Returns:
-            bool: True if tag is a scan target, False otherwise
-        """
-        return (
-            100 <= tag_id <= 123 or
-            124 <= tag_id <= 147
-        )
 
     # --------------------------------------------------
     # Task Definitions
     # --------------------------------------------------
-    def _task_zone_b_c(self) -> List[int]:
+    def _task_zone_b_c(self) -> List[Dict]:
         """
-        TASK1 definition:
-        - Zone B: tags 111 → 100 (top to bottom)
-        - Zone C: tags 112 → 123 (top to bottom)
-
-        Returns:
-            List[int]: Ordered scan sequence
+        TASK1:
+        - Zone B: scan all
+        - Zone C: scan all
         """
-        zone_b = list(range(111, 99, -1))   # 111 ~ 100
-        zone_c = list(range(112, 124))      # 112 ~ 123
+        zone_b = [{"tag": t, "scan": True} for t in range(111, 99, -1)]
+        zone_c = [{"tag": t, "scan": True} for t in range(112, 124)]
         return zone_b + zone_c
 
-    def _task_zone_d_e(self) -> List[int]:
+    def _task_zone_d_e(self) -> List[Dict]:
         """
-        TASK2 definition:
-        - Zone D: tags 135 → 124 (top to bottom)
-        - Zone E: tags 136 → 147 (top to bottom)
-
-        Returns:
-            List[int]: Ordered scan sequence
+        TASK2:
+        - Zone D: scan all
+        - Zone E: scan all
         """
-        zone_d = list(range(135, 123, -1))  # 135 ~ 124
-        zone_e = list(range(136, 148))      # 136 ~ 147
+        zone_d = [{"tag": t, "scan": True} for t in range(135, 123, -1)]
+        zone_e = [{"tag": t, "scan": True} for t in range(136, 148)]
         return zone_d + zone_e
+
+    def _task_single_example(self) -> List[Dict]:
+        """
+        Example:
+        - Move to a WORK tag but do NOT scan
+        - Then scan another WORK tag
+        """
+        return [
+            {"tag": 104, "scan": False},  # move-only
+            {"tag": 105, "scan": True},   # move + scan
+        ]
