@@ -1,89 +1,179 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from typing import List, Dict
+import csv
+import os
+import rospy
+from collections import defaultdict
+from typing import Dict, List
 
 
 class TaskManager:
     """
-    Final TaskManager (single responsibility, stable design)
-
-    Design rules:
-    - Defines WHAT to visit (tag) and HOW to use it (scan or move-only)
-    - Does NOT include Dock / Pivot / Move tags
-    - Does NOT expand navigation paths
-    - Execution order is explicitly defined
+    TaskManager
+    ===========
+    - Load multiple CSV files
+    - Each CSV == one task
+    - group_id == tag_id
+    - Scan task detection rule:
+        1) filename starts with 'scan_'  (FORCE scan)
+        2) OR CSV header contains 'mode'
+    - CSV without 'mode' will default to pose scan
     """
 
-    # --------------------------------------------------
-    # INIT
-    # --------------------------------------------------
-    def __init__(self):
-        """
-        Initialize all predefined tasks.
-        """
-        self._tasks: Dict[str, List[Dict]] = {
-            "TASK1": self._task_zone_b_c(),
-            "TASK2": self._task_zone_d_e(),
-            "TASK_SINGLE": self._task_single_example(),
-        }
+    def __init__(self, task_dir: str):
+        self.task_dir = task_dir
+
+        # task_name -> [{tag, scan}]
+        self.tasks: Dict[str, List[dict]] = {}
+
+        # task_name -> tag_id -> [scan points]
+        self.scan_points: Dict[str, Dict[int, List[dict]]] = defaultdict(dict)
+
+        rospy.loginfo(f"[TaskManager] Load tasks from {task_dir}")
+        self._load_all_tasks()
 
     # --------------------------------------------------
-    # Public API
+    # LOAD ALL CSV TASKS
     # --------------------------------------------------
-    def get_task(self, task_name: str) -> List[Dict]:
-        """
-        Return task execution list.
+    def _load_all_tasks(self):
+        if not os.path.isdir(self.task_dir):
+            rospy.logerr(f"[TaskManager] Task dir not found: {self.task_dir}")
+            return
 
-        Each item format:
-            {
-                "tag": int,
-                "scan": bool
-            }
+        for fname in sorted(os.listdir(self.task_dir)):
+            if not fname.endswith(".csv"):
+                continue
 
-        Args:
-            task_name (str): Task identifier
+            task_name = os.path.splitext(fname)[0]
+            csv_path = os.path.join(self.task_dir, fname)
 
-        Returns:
-            List[Dict]: Ordered task items
-        """
-        task_name = task_name.upper()
-        return self._tasks.get(task_name, [])
+            rows = self._read_csv(csv_path)
+            if not rows:
+                rospy.logwarn(f"[TaskManager] Empty CSV: {csv_path}")
+                continue
 
-    def list_tasks(self) -> List[str]:
-        """List all available task names"""
-        return list(self._tasks.keys())
+            # --------------------------------------------------
+            # ⭐ SCAN TASK DETECTION RULE
+            # --------------------------------------------------
+            is_scan_task = (
+                task_name.startswith("scan_")   # filename rule
+                or "mode" in rows[0]             # header rule
+            )
+
+            rospy.loginfo(
+                f"[TaskManager] Loading '{task_name}': "
+                f"scan_task={is_scan_task}, headers={list(rows[0].keys())}"
+            )
+
+            if is_scan_task:
+                self._build_scan_task(task_name, rows)
+            else:
+                self._build_move_only_task(task_name, rows)
+
+            rospy.loginfo(
+                f"[TaskManager] Task '{task_name}' loaded "
+                f"(steps={len(self.tasks.get(task_name, []))})"
+            )
+
+    def _read_csv(self, csv_path: str) -> List[dict]:
+        rows = []
+        try:
+            with open(csv_path, newline='', encoding="utf-8-sig") as f:
+                reader = csv.DictReader(f)
+                for r in reader:
+                    rows.append(r)
+        except Exception as e:
+            rospy.logerr(f"[TaskManager] Failed to read {csv_path}: {e}")
+        return rows
 
     # --------------------------------------------------
-    # Task Definitions
+    # BUILD SCAN TASK
     # --------------------------------------------------
-    def _task_zone_b_c(self) -> List[Dict]:
-        """
-        TASK1:
-        - Zone B: scan all
-        - Zone C: scan all
-        """
-        zone_b = [{"tag": t, "scan": True} for t in range(111, 99, -1)]
-        zone_c = [{"tag": t, "scan": True} for t in range(112, 124)]
-        return zone_b + zone_c
+    def _build_scan_task(self, task_name: str, rows: List[dict]):
+        task_steps = []
+        scan_points_by_tag = defaultdict(list)
 
-    def _task_zone_d_e(self) -> List[Dict]:
-        """
-        TASK2:
-        - Zone D: scan all
-        - Zone E: scan all
-        """
-        zone_d = [{"tag": t, "scan": True} for t in range(135, 123, -1)]
-        zone_e = [{"tag": t, "scan": True} for t in range(136, 148)]
-        return zone_d + zone_e
+        # sort: order -> group_id -> point_id
+        rows.sort(
+            key=lambda r: (
+                int(r.get("order", 0)),
+                int(r.get("group_id", 0)),
+                int(r.get("point_id", 0)),
+            )
+        )
 
-    def _task_single_example(self) -> List[Dict]:
-        """
-        Example:
-        - Move to a WORK tag but do NOT scan
-        - Then scan another WORK tag
-        """
-        return [
-            {"tag": 104, "scan": False},  # move-only
-            {"tag": 105, "scan": True},   # move + scan
-        ]
+        prev_gid = None
+
+        for r in rows:
+            gid = int(r["group_id"])   # tag_id
+
+            # ---- task step (move + scan) ----
+            if gid != prev_gid:
+                task_steps.append({
+                    "tag": gid,
+                    "scan": True
+                })
+                prev_gid = gid
+
+            # ---- scan point ----
+            mode = "joint"  # ⭐ default pose
+            speed = float(r.get("speed", 80))
+
+            if mode == "pose":
+                scan_points_by_tag[gid].append({
+                    "mode": "pose",
+                    "x": float(r["x"]),
+                    "y": float(r["y"]),
+                    "z": float(r["z"]),
+                    "rx": float(r["rx"]),
+                    "ry": float(r["ry"]),
+                    "rz": float(r["rz"]),
+                    "speed": speed
+                })
+
+            elif mode == "joint":
+                scan_points_by_tag[gid].append({
+                    "mode": "joint",
+                    "joints": [
+                        float(r["q1"]), float(r["q2"]), float(r["q3"]),
+                        float(r["q4"]), float(r["q5"]), float(r["q6"])
+                    ],
+                    "speed": speed
+                })
+            else:
+                rospy.logwarn(
+                    f"[TaskManager] Unknown mode '{mode}' "
+                    f"in task '{task_name}', tag {gid}"
+                )
+
+        self.tasks[task_name] = task_steps
+        self.scan_points[task_name] = scan_points_by_tag
+
+    # --------------------------------------------------
+    # BUILD MOVE-ONLY TASK
+    # --------------------------------------------------
+    def _build_move_only_task(self, task_name: str, rows: List[dict]):
+        task_steps = []
+
+        for r in rows:
+            gid = int(r["group_id"])
+            task_steps.append({
+                "tag": gid,
+                "scan": False
+            })
+
+        self.tasks[task_name] = task_steps
+        self.scan_points[task_name] = {}
+
+    # --------------------------------------------------
+    # PUBLIC API
+    # --------------------------------------------------
+    def get_task(self, task_name: str) -> List[dict]:
+        return self.tasks.get(task_name, [])
+
+    def get_scan_points(self, task_name: str, tag_id: int) -> List[dict]:
+        return self.scan_points.get(task_name, {}).get(tag_id, [])
+
+    def get_all_task_names(self) -> List[str]:
+        return list(self.tasks.keys())
