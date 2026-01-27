@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
+import os
 import rospy
 from std_msgs.msg import Bool, String
 from enum import Enum, auto
 from typing import List, Optional
 
-from mobile_robot_controller import MobileRobotController, TagDatabase, NavigationGraph
+from map_manager import MapManager
+from task_manager import TaskManager          # ⭐ 新增
+from robot_controller import RobotController
 from arm_controller import ArmController
-from task_manager import TaskManager
+import utils
 
 
 # ============================================================
-# STATE
+# STATE ENUM
 # ============================================================
 class MobileManipulatorState(Enum):
     IDLE = auto()
@@ -24,7 +26,18 @@ class MobileManipulatorState(Enum):
 
 
 # ============================================================
-# TASK EXECUTOR (FINAL – STABLE)
+# PATHS
+# ============================================================
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PKG_DIR = os.path.dirname(SCRIPT_DIR)
+
+CONFIG_PATH = os.path.join(PKG_DIR, 'config', 'robot.yaml')
+MAP_PATH = os.path.join(PKG_DIR, 'config', 'map.yaml')
+TASK_DIR = os.path.join(PKG_DIR, 'task', 'csv')   # 多 CSV 目录
+print(TASK_DIR)
+
+# ============================================================
+# TASK EXECUTOR
 # ============================================================
 class MobileManipulatorTaskExecutor:
 
@@ -35,89 +48,99 @@ class MobileManipulatorTaskExecutor:
 
         rospy.init_node("mobile_manipulator_system")
 
-        # ---------- Core ----------
-        self.tag_db = TagDatabase()
-        self.nav_graph = NavigationGraph(self.tag_db)
+        # ---------- Config ----------
+        robot_config = utils.load_config(CONFIG_PATH)
 
-        self.mobile = MobileRobotController(self.tag_db, self.nav_graph)
-        self.arm = ArmController(
-            csv_path="/home/lcl/mold_ws/src/mold_pkg/scripts/grid_path.csv"
+        # ---------- Managers ----------
+        self.map_mgr = MapManager(MAP_PATH)
+        self.task_mgr = TaskManager(TASK_DIR)        # 新增
+
+        # ---------- Controllers ----------
+        self.mobile = RobotController(
+            config=robot_config,
+            map_manager=self.map_mgr
         )
-        self.task_manager = TaskManager()
+
+        self.arm = ArmController()                    # 不再传 csv_path
 
         # ---------- State ----------
         self.state = MobileManipulatorState.IDLE
         self.scan_done = False
 
-        # ---------- Task control ----------
-        self._current_task: Optional[List[int]] = None
-        self._next_task: Optional[List[int]] = None
-
+        # ---------- Task ----------
+        self._current_task_name: Optional[str] = None
+        self._current_task: Optional[List[dict]] = None
         self._stop_requested = False
         self._pause_requested = False
-        self._skip_requested = False
-        self._task_switch_requested = False
 
         # ---------- ROS ----------
-        rospy.Subscriber('/scan_finished', Bool, self._scan_done_cb, queue_size=1)
-        rospy.Subscriber('/task_command', String, self._command_cb, queue_size=10)
+        rospy.Subscriber(
+            "/scan_finished",
+            Bool,
+            self._scan_done_cb,
+            queue_size=1
+        )
+        rospy.Subscriber(
+            "/task_command",
+            String,
+            self._command_cb,
+            queue_size=10
+        )
 
         rospy.loginfo("[Executor] System ready (IDLE)")
+
 
     # --------------------------------------------------
     # COMMAND CALLBACK
     # --------------------------------------------------
     def _command_cb(self, msg: String):
-        cmd = msg.data.strip().upper()
+        cmd = msg.data.strip()
         rospy.logwarn(f"[TASK COMMAND] {cmd}")
 
-        if cmd == "STOP":
+        if cmd.upper() == "STOP":
             self._stop_requested = True
             self._pause_requested = False
-            self.mobile.set_pause(False)
 
-        elif cmd == "PAUSE":
+        elif cmd.upper() == "PAUSE":
             self._pause_requested = True
-            self.mobile.set_pause(True)
 
-        elif cmd == "RESUME":
+        elif cmd.upper() == "RESUME":
             self._pause_requested = False
-            self.mobile.set_pause(False)
 
-        elif cmd == "SKIP":
-            self._skip_requested = True
-
-        elif cmd.startswith("TASK"):
+        elif cmd.upper().startswith("TASK"):
+            # e.g. "TASK scan_task_A"
             parts = cmd.split()
-            if len(parts) == 2:
-                task = self.task_manager.get_task(parts[1])
-                if task:
-                    self.request_new_task(task)
-                else:
-                    rospy.logerr(f"[TASK] Unknown task {parts[1]}")
+            if len(parts) != 2:
+                rospy.logerr("[TASK] Usage: TASK <task_name>")
+                return
 
-        elif cmd == "STATE":
+            task_name = parts[1]
+
+            task = self.task_mgr.get_task(task_name)
+            print(task)
+            if not task:
+                rospy.logerr(f"[TASK] Unknown task '{task_name}'")
+                return
+
+            self._current_task_name = task_name
+            self._current_task = task
+
+            rospy.loginfo(
+                f"[TASK] Loaded task '{task_name}' "
+                f"(steps={len(task)})"
+            )
+
+        elif cmd.upper() == "STATE":
             rospy.loginfo(f"[STATE] {self.state.name}")
 
-    # --------------------------------------------------
-    # TASK SWITCH
-    # --------------------------------------------------
-    def request_new_task(self, task: List[int]):
-        rospy.logwarn("[TASK] New task requested")
-
-        if self._current_task is None:
-            self._current_task = task
-        else:
-            self._next_task = task
-            self._task_switch_requested = True
-            self._stop_requested = True
 
     # --------------------------------------------------
-    # SCAN FINISHED
+    # SCAN FINISHED CALLBACK
     # --------------------------------------------------
     def _scan_done_cb(self, msg: Bool):
         if msg.data:
             self.scan_done = True
+
 
     # --------------------------------------------------
     # MAIN LOOP
@@ -132,95 +155,89 @@ class MobileManipulatorTaskExecutor:
                 rate.sleep()
                 continue
 
-            self._run_task(self._current_task)
+            self._run_task(
+                self._current_task_name,
+                self._current_task
+            )
 
-            if self._task_switch_requested:
-                self._task_switch_requested = False
-                self._current_task = self._next_task
-                self._next_task = None
-            else:
-                self._current_task = None
-
+            self._current_task_name = None
+            self._current_task = None
             rate.sleep()
+
 
     # --------------------------------------------------
     # TASK EXECUTION
     # --------------------------------------------------
-    def _run_task(self, task_items: List[dict]):
+    def _run_task(self, task_name: str, task_items: List[dict]):
+        print(task_items)
 
         self._reset_flags()
-        rospy.loginfo(f"[TASK] Start task: {task_items}")
+        rospy.loginfo(f"[TASK] Start task '{task_name}'")
 
         for item in task_items:
 
-            tag_id = item["tag"]
-            do_scan = item.get("scan", False)
-
-            # ---------- STOP ----------
             if self._stop_requested:
                 rospy.logwarn("[TASK] Task stopped")
                 break
 
-            # ---------- PAUSE ----------
             while self._pause_requested and not rospy.is_shutdown():
                 rospy.loginfo_throttle(1.0, "[TASK] Paused")
                 rospy.sleep(0.1)
 
+            tag_id = item["tag"]
+            do_scan = item.get("scan", False)
+
             # ---------- MOVE ----------
             self.state = MobileManipulatorState.MOVING
-            if not self.mobile.move_to_tag(tag_id):
+            rospy.loginfo(f"[TASK] Moving to tag {tag_id}")
+
+            ok = self.mobile.move_to_tag(tag_id)
+            if not ok:
+                rospy.logerr(f"[TASK] Failed to move to tag {tag_id}")
                 self.state = MobileManipulatorState.ERROR
-                continue
+                return
 
             self.state = MobileManipulatorState.ARRIVED
+            rospy.loginfo(f"[TASK] Arrived at tag {tag_id}")
+            rospy.logwarn(f"[DEBUG] item={item}, do_scan={do_scan}")
 
-            # ---------- SCAN (선택적) ----------
-            if not do_scan:
-                rospy.loginfo(f"[TASK] Tag {tag_id} → MOVE ONLY")
-                continue
+            # ---------- SCAN ----------
+            if do_scan:
+                self.state = MobileManipulatorState.SCANNING
+                rospy.loginfo(f"[TASK] Start scan at tag {tag_id}")
 
-            rospy.loginfo(f"[TASK] Tag {tag_id} → MOVE + SCAN")
-            self.state = MobileManipulatorState.SCANNING
-            self.mobile.publish_pose_for_arm(tag_id)
+                scan_points = self.task_mgr.get_scan_points(
+                    task_name,
+                    tag_id
+                )
 
-            if not self._wait_for_scan(tag_id):
-                self.state = MobileManipulatorState.ERROR
-                continue
+                if not scan_points:
+                    rospy.logwarn(
+                        f"[TASK] No scan points for tag {tag_id}"
+                    )
+                    continue
 
-            self.state = MobileManipulatorState.SCAN_DONE
+                self.scan_done = False
+                self.arm.execute_scan_points(scan_points)
+
+                # ---- wait for scan_finished ----
+                while not self.scan_done and not rospy.is_shutdown():
+                    rospy.sleep(0.1)
+
+                self.state = MobileManipulatorState.SCAN_DONE
+                rospy.loginfo(f"[TASK] Scan finished at tag {tag_id}")
 
         self.state = MobileManipulatorState.IDLE
         rospy.loginfo("[TASK] Task finished")
 
 
-
     # --------------------------------------------------
     # UTILS
     # --------------------------------------------------
-    def _wait_for_scan(self, tag_id, timeout=None) -> bool:
-        self.scan_done = False
-        start = rospy.Time.now()
-        rate = rospy.Rate(10)
-
-        while not rospy.is_shutdown():
-            if self.scan_done:
-                return True
-
-            if self._stop_requested:
-                return False
-
-            if timeout and (rospy.Time.now() - start).to_sec() > timeout:
-                rospy.logerr(f"[TASK] Scan timeout at tag {tag_id}")
-                return False
-
-            rate.sleep()
-
-        return False
-
     def _reset_flags(self):
         self._stop_requested = False
         self._pause_requested = False
-        self._skip_requested = False
+        self.scan_done = False
 
 
 # ============================================================
